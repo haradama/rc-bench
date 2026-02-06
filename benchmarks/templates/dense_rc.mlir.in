@@ -1,0 +1,19 @@
+module {
+  func.func @main() -> i32 {
+    // ここは最小：実際のテンソル初期化は runtimeに任せるか、
+    // 後述スクリプトで定数tensorを埋める方式にします。
+    // フェーズ1では「入力は一定」なら定数埋め込みでOK。
+
+    // PLACEHOLDERS:
+    //   %W, %Win, %x, %u are ranked tensors
+    // leak is attr
+
+    %x_next = rc.reservoir_update_dense %W, %x, %u, %Win { leak = ${LEAK} : f32 }
+      : (tensor<${N}x${N}xf32>, tensor<${B}x${N}xf32>, tensor<${B}x${DIN}xf32>, tensor<${DIN}x${N}xf32>) -> tensor<${B}x${N}xf32>
+
+    // ベンチは T steps 回す必要があるので、実際はscf.forで回す版を生成する（gen_case.pyで生成）
+    %c0 = arith.constant 0 : i32
+    return %c0 : i32
+  }
+}
+

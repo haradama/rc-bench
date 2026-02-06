@@ -1,0 +1,11 @@
+module {
+  func.func @main() -> i32 {
+    // gen_case.pyが scf.for を生成し、各stepで:
+    // pre = matmul(x, W) + matmul(u, Win)
+    // act = tanh(pre)
+    // x = (1-a)*x + a*act
+    %c0 = arith.constant 0 : i32
+    return %c0 : i32
+  }
+}
+

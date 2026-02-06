@@ -1,0 +1,23 @@
+results_phase1/mlir/dense_A_llvm_N512_B1.mlir:144:5: error: Dialect `cf' not found for custom op 'cf.br' 
+    cf.br ^bb1(%4 : index)
+    ^
+results_phase1/mlir/dense_A_llvm_N512_B1.mlir:144:5: note: Registered dialects: acc, arm_neon, arm_sme, arm_sve, builtin, dlti, func, gpu, llvm, nvvm, omp, rocdl, spirv, vcix ; for more info on dialect registration see https://mlir.llvm.org/getting_started/Faq/#registered-loaded-dependent-whats-up-with-dialects-management
++ python3 scripts/gen_case.py --out results_phase1/mlir/dense_A_rc_N512_B1.mlir --mode dense_rc --N 512 --B 1 --Din 64 --T 10000 --leak 0.3
++ python3 scripts/gen_case.py --out results_phase1/mlir/dense_B_linalg_N512_B1.mlir --mode dense_linalg --N 512 --B 1 --Din 64 --T 10000 --leak 0.3
++ build/lib/rc-opt results_phase1/mlir/dense_A_rc_N512_B1.mlir -convert-rc-to-linalg -o results_phase1/mlir/dense_A_low_N512_B1.mlir
++ build/lib/rc-opt results_phase1/mlir/dense_A_low_N512_B1.mlir -canonicalize -cse -convert-scf-to-cf -convert-math-to-llvm -convert-arith-to-llvm -finalize-memref-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -o -
++ mlir-translate --mlir-to-llvmir results_phase1/mlir/dense_A_llvm_N512_B1.mlir
+Traceback (most recent call last):
+  File "/Users/masafumi.harada/workspace/rc-bench/scripts/build_and_run.py", line 154, in <module>
+    main()
+    ~~~~^^
+  File "/Users/masafumi.harada/workspace/rc-bench/scripts/build_and_run.py", line 102, in main
+    run([args.mlir_translate, "--mlir-to-llvmir", str(a_llvm_dialect)], stdout=f)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/masafumi.harada/workspace/rc-bench/scripts/build_and_run.py", line 10, in run
+    subprocess.run(cmd, check=True, **kw)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/masafumi.harada/.pyenv/versions/3.13.2/lib/python3.13/subprocess.py", line 579, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['mlir-translate', '--mlir-to-llvmir', 'results_phase1/mlir/dense_A_llvm_N512_B1.mlir']' returned non-zero exit status 1.
