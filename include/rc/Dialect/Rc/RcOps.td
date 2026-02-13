@@ -1,39 +1,43 @@
+// include/rc/Dialect/Rc/RcOps.td
+#ifndef RC_OPS
+#define RC_OPS
+
 include "mlir/IR/OpBase.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def Rc_Dialect : Dialect {
   let name = "rc";
   let cppNamespace = "::rc";
 }
 
-def Rc_ReservoirUpdateDenseOp : Op<Rc_Dialect, "reservoir_update_dense"> {
-  let summary = "Dense ESN reservoir update (one step)";
-  let arguments = (ins
-    AnyRankedTensor:$W,
-    AnyRankedTensor:$x,
-    AnyRankedTensor:$u,
-    AnyRankedTensor:$Win
-  );
-  let results = (outs AnyRankedTensor:$x_next);
+def ReservoirStepDenseOp : Op<Rc_Dialect, "reservoir_step_dense",
+  [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
 
-  // leak is a normal attribute (NOT a property)
-  let extraClassDeclaration = [{
-    ::mlir::FloatAttr getLeakAttr() { return (*this)->getAttrOfType<::mlir::FloatAttr>("leak"); }
+  let summary = "Reservoir step (dense) updating memrefs";
+  let description = [{
+    Performs one reservoir step and writes results/scratch buffers.
+  }];
+
+  let arguments = (ins
+    AnyMemRef:$W,
+    AnyMemRef:$Win,
+    AnyMemRef:$u,
+    AnyMemRef:$x,
+    AnyMemRef:$x2,
+    AnyMemRef:$tmp1,
+    AnyMemRef:$tmp2,
+    AnyMemRef:$pre,
+    F32Attr:$leak
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $W `,` $Win `,` $u `,` $x `,` $x2 `,` $tmp1 `,` $tmp2 `,` $pre
+    attr-dict `:` functional-type(operands, results)
   }];
 }
 
-def Rc_ReservoirUpdateCsrOp : Op<Rc_Dialect, "reservoir_update_csr"> {
-  let summary = "CSR sparse ESN reservoir update (one step)";
-  let arguments = (ins
-    AnyRankedTensor:$rowptr,
-    AnyRankedTensor:$colind,
-    AnyRankedTensor:$values,
-    AnyRankedTensor:$x,
-    AnyRankedTensor:$u,
-    AnyRankedTensor:$Win
-  );
-  let results = (outs AnyRankedTensor:$x_next);
-
-  let extraClassDeclaration = [{
-    ::mlir::FloatAttr getLeakAttr() { return (*this)->getAttrOfType<::mlir::FloatAttr>("leak"); }
-  }];
-}
+#endif // RC_OPS

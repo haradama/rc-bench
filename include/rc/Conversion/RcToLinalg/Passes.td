@@ -1,8 +1,13 @@
 include "mlir/Pass/PassBase.td"
 
-def ConvertRcToLinalg : Pass<"convert-rc-to-linalg", "::mlir::func::FuncOp"> {
-  let summary = "Lower rc dialect ops to linalg/sparse_tensor + arith";
+def ConvertRcToLinalg : Pass<"convert-rc-to-linalg", "mlir::func::FuncOp"> {
+  let summary = "Lower rc dialect ops to linalg (memref-based, no allocations)";
   let constructor = "rc::createConvertRcToLinalgPass()";
-  // 追加: これがないとベースクラスが rc::impl ではなくグローバルの impl に生成されてしまう
-  // let cppNamespace = "::rc"; 
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::math::MathDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+  let options = [];
 }
