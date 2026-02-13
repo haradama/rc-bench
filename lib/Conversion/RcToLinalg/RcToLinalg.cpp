@@ -7,7 +7,6 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -67,8 +66,7 @@ struct PingPongElideCopy : OpRewritePattern<scf::ForOp> {
   }
 
   LogicalResult matchAndRewrite(scf::ForOp forOp,
-                                PatternRewriter &rewriter) const override {
-    // We only handle single-block scf.for in the template.
+                               PatternRewriter &rewriter) const override {
     Block *body = forOp.getBody();
     if (!body) return failure();
 
@@ -111,7 +109,6 @@ struct PingPongElideCopy : OpRewritePattern<scf::ForOp> {
           Value xCur  = iterArgs[0];
           Value xNext = iterArgs[1];
 
-          // Recreate rc.reservoir_step_dense but with xCur/xNext swapped in.
           // operands: W, Win, u, x, x2, tmp1, tmp2, pre
           b.create<rc::ReservoirStepDenseOp>(
               l,
@@ -125,55 +122,41 @@ struct PingPongElideCopy : OpRewritePattern<scf::ForOp> {
               /*pre*/  step.getPre(),
               /*leak*/ step.getLeakAttr());
 
-          // Swap for next iteration: xCur <- xNext, xNext <- xCur
+          // Swap for next iteration
           b.create<scf::YieldOp>(l, ValueRange{xNext, xCur});
         });
 
     // Replace uses of original %x AFTER the loop with newFor.getResult(0).
-    // (Inside the loop, we already rebuilt the step using iter args.)
     Value xFinal = newFor.getResult(0);
 
     // loop 後にある "読み" だけ置換（dealloc は触らない）
     for (Operation *user : llvm::make_early_inc_range(x.getUsers())) {
-      // old loop / new loop 内はスキップ
       if (forOp->isAncestor(user) || newFor->isAncestor(user)) continue;
-
-      // 同一 block で old loop より後にあるものだけ
       if (user->getBlock() != forOp->getBlock()) continue;
       if (!forOp->isBeforeInBlock(user)) continue;
 
       if (auto load = dyn_cast<memref::LoadOp>(user)) {
         load.getMemrefMutable().assign(xFinal);
       }
-
-      // memref.dealloc は絶対に触らない
-      // if (isa<memref::DeallocOp>(user)) continue;
     }
 
-    // Erase the old loop (removes the copy loop too).
     rewriter.eraseOp(forOp);
     return success();
   }
 };
 
-/// Lower rc.reservoir_step_dense to:
-/// tmp1 = linalg.matmul(x, W) -> tmp1
-/// tmp2 = linalg.matmul(u, Win) -> tmp2
-/// pre  = tmp1 + tmp2 -> pre
-/// pre  = tanh(pre) -> pre (in-place)
-/// x2   = (1-leak)*x + leak*pre -> x2
-
-/// Lower rc.reservoir_step_dense to:
-/// tmp1 = 0; tmp1 += x*W
-/// tmp2 = 0; tmp2 += u*Win
-/// pre  = tmp1 + tmp2
-/// pre  = tanh(pre) (in-place)
-/// x2   = (1-leak)*x + leak*pre
+/// Lower rc.reservoir_step_dense to (fused, fewer temporaries):
+///   x2 = 0
+///   x2 += x * W
+///   x2 += u * Win
+///   x2 = (1-leak) * x + leak * tanh(x2)
+///
+/// ここで x2 を "pre の累積バッファ" として使い回し、tanh と lerp を 1 本の generic に融合する。
 struct LowerDenseStep : OpRewritePattern<rc::ReservoirStepDenseOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(rc::ReservoirStepDenseOp op,
-                                PatternRewriter &rewriter) const override {
+                               PatternRewriter &rewriter) const override {
     op.emitRemark() << "LowerDenseStep fired";
     Location loc = op.getLoc();
 
@@ -182,80 +165,54 @@ struct LowerDenseStep : OpRewritePattern<rc::ReservoirStepDenseOp> {
     Value u    = op.getU();
     Value x    = op.getX();
     Value x2   = op.getX2();
-    Value tmp1 = op.getTmp1();
-    Value tmp2 = op.getTmp2();
-    Value pre  = op.getPre();
+    // NOTE: tmp1/tmp2/pre は op 仕様上はあるが、この lowering では使わない。
+    // Value tmp1 = op.getTmp1();
+    // Value tmp2 = op.getTmp2();
+    // Value pre  = op.getPre();
 
-    // leak is an Attribute (FloatAttr)
     float leak = static_cast<float>(op.getLeak().convertToDouble());
-
     rewriter.getContext()->getOrLoadDialect<mlir::math::MathDialect>();
 
-    // IMPORTANT: linalg.matmul is C += A*B, so we must zero tmp1/tmp2 each step.
+    // constants
     Value c0f = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getF32Type(), rewriter.getF32FloatAttr(0.0f));
-    rewriter.create<linalg::FillOp>(loc, ValueRange{c0f}, ValueRange{tmp1});
-    rewriter.create<linalg::FillOp>(loc, ValueRange{c0f}, ValueRange{tmp2});
-
-    // tmp1 += x*W
-    rewriter.create<linalg::MatmulOp>(
-        loc, ValueRange{x, W}, ValueRange{tmp1});
-
-    // tmp2 += u*Win
-    rewriter.create<linalg::MatmulOp>(
-        loc, ValueRange{u, Win}, ValueRange{tmp2});
-
-    // Common affine maps for 2D elementwise
-    auto id2 = AffineMap::getMultiDimIdentityMap(2, rewriter.getContext());
-    SmallVector<utils::IteratorType, 2> iters = {
-        utils::IteratorType::parallel,
-        utils::IteratorType::parallel
-    };
-
-    // pre = tmp1 + tmp2
-    rewriter.create<linalg::GenericOp>(
-        loc,
-        /*resultTensorTypes=*/TypeRange{},
-        /*inputs=*/ValueRange{tmp1, tmp2},
-        /*outputs=*/ValueRange{pre},
-        /*indexingMaps=*/ArrayRef<AffineMap>{id2, id2, id2},
-        /*iteratorTypes=*/iters,
-        [&](OpBuilder &b, Location l, ValueRange args) {
-          Value sum = b.create<arith::AddFOp>(l, args[0], args[1]);
-          b.create<linalg::YieldOp>(l, sum);
-        });
-
-    // pre = tanh(pre) in-place
-    rewriter.create<linalg::GenericOp>(
-        loc,
-        TypeRange{},
-        ValueRange{pre},
-        ValueRange{pre},
-        ArrayRef<AffineMap>{id2, id2},
-        iters,
-        [&](OpBuilder &b, Location l, ValueRange args) {
-          Value t = b.create<mlir::math::TanhOp>(l, args[0]);
-          b.create<linalg::YieldOp>(l, t);
-        });
-
-    // x2 = (1-leak)*x + leak*pre
     Value one = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getF32Type(), rewriter.getF32FloatAttr(1.0f));
     Value alpha = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getF32Type(), rewriter.getF32FloatAttr(leak));
     Value oneMinus = rewriter.create<arith::SubFOp>(loc, one, alpha);
 
+    // x2 = 0 (x2 を pre の累積先にする。matmul は C += A*B)
+    rewriter.create<linalg::FillOp>(loc, ValueRange{c0f}, ValueRange{x2});
+
+    // x2 += x*W
+    rewriter.create<linalg::MatmulOp>(loc, ValueRange{x, W}, ValueRange{x2});
+
+    // x2 += u*Win
+    rewriter.create<linalg::MatmulOp>(loc, ValueRange{u, Win}, ValueRange{x2});
+
+    // x2 = (1-leak)*x + leak*tanh(x2)  (tanh + lerp fused)
+    auto id2 = AffineMap::getMultiDimIdentityMap(2, rewriter.getContext());
+    SmallVector<utils::IteratorType, 2> iters = {
+        utils::IteratorType::parallel,
+        utils::IteratorType::parallel
+    };
+
     rewriter.create<linalg::GenericOp>(
         loc,
-        TypeRange{},
-        ValueRange{x, pre},
-        ValueRange{x2},
-        ArrayRef<AffineMap>{id2, id2, id2},
-        iters,
+        /*resultTensorTypes=*/TypeRange{},
+        /*inputs=*/ValueRange{x, x2},
+        /*outputs=*/ValueRange{x2},
+        /*indexingMaps=*/ArrayRef<AffineMap>{id2, id2, id2},
+        /*iteratorTypes=*/iters,
         [&](OpBuilder &b, Location l, ValueRange args) {
-          Value term1 = b.create<arith::MulFOp>(l, oneMinus, args[0]);
-          Value term2 = b.create<arith::MulFOp>(l, alpha, args[1]);
-          Value y = b.create<arith::AddFOp>(l, term1, term2);
+          Value xv  = args[0];
+          Value pre = args[1];
+
+          Value th = b.create<mlir::math::TanhOp>(l, pre);
+          Value t1 = b.create<arith::MulFOp>(l, oneMinus, xv);
+          Value t2 = b.create<arith::MulFOp>(l, alpha, th);
+          Value y  = b.create<arith::AddFOp>(l, t1, t2);
           b.create<linalg::YieldOp>(l, y);
         });
 
@@ -263,7 +220,6 @@ struct LowerDenseStep : OpRewritePattern<rc::ReservoirStepDenseOp> {
     return success();
   }
 };
-
 
 } // namespace
 
@@ -278,11 +234,11 @@ void runConvertRcToLinalg(func::FuncOp func) {
     (void)applyPatternsGreedily(func, std::move(pp));
   }
 
-  // --- Stage 2: rc op を linalg に lower ---
+  // --- Stage 2: rc op を linalg に lower（fused 版）---
   {
     RewritePatternSet lower(ctx);
     lower.add<LowerDenseStep>(ctx);
-    (void)applyPatternsAndFoldGreedily(func, std::move(lower));
+    (void)applyPatternsGreedily(func, std::move(lower));
   }
 }
 } // namespace rc
