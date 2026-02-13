@@ -96,7 +96,7 @@ def main():
     ]
 
     cases = []
-    for N in [512, 1024, 2048]:
+    for N in [32, 64, 128, 512, 1024, 2048]:
         for B in [1, 16]:
             cases.append(("dense", N, B))
 
