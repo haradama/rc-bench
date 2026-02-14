@@ -1,4 +1,3 @@
-// include/rc/Dialect/Rc/RcOps.td
 #ifndef RC_OPS
 #define RC_OPS
 

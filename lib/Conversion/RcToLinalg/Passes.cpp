@@ -23,7 +23,8 @@ struct ConvertRcToLinalgPass
     : public rc::impl::ConvertRcToLinalgBase<ConvertRcToLinalgPass> {
   void runOnOperation() override {
     auto f = getOperation();
-    if (f.getName() != "bench") return;          // ここ重要
+    auto name = f.getName();
+    if (name != "bench" && name != "infer_store") return;
     rc::runConvertRcToLinalg(f);
   }
 };

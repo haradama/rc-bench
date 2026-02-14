@@ -3,9 +3,8 @@
 
 namespace rc {
 class RcDialect : public mlir::Dialect {
-public:
-  explicit RcDialect(mlir::MLIRContext *ctx);
-  static llvm::StringRef getDialectNamespace() { return "rc"; }
+   public:
+    explicit RcDialect(mlir::MLIRContext* ctx);
+    static llvm::StringRef getDialectNamespace() { return "rc"; }
 };
-} // namespace rc
-
+}  // namespace rc

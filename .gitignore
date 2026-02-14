@@ -1,3 +1,6 @@
+build
+results_*
+
 # Created by https://www.toptal.com/developers/gitignore/api/c,c++,macos,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=c,c++,macos,visualstudiocode
 
@@ -81,7 +84,8 @@ dkms.conf
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*

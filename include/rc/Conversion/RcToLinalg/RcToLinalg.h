@@ -4,4 +4,3 @@
 namespace rc {
 void runConvertRcToLinalg(mlir::func::FuncOp func);
 }
-
