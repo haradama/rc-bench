@@ -1,4 +1,4 @@
-name: C/C++ CI
+name: CI
 
 on:
   push:
@@ -7,17 +7,86 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
+  build-and-test:
+    runs-on: ubuntu-22.04
 
-    runs-on: ubuntu-latest
+    env:
+      LLVM_VERSION: 22
 
     steps:
-    - uses: actions/checkout@v4
-    - name: configure
-      run: ./configure
-    - name: make
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install numpy reservoirpy
+
+    - name: Install LLVM, MLIR, and Clang
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh ${{ env.LLVM_VERSION }} all
+        
+        sudo apt-get install -y \
+                  ninja-build \
+                  libmlir-${{ env.LLVM_VERSION }}-dev \
+                  mlir-${{ env.LLVM_VERSION }}-tools
+        
+        sudo ln -sf /usr/bin/clang++-${{ env.LLVM_VERSION }} /usr/bin/clang++
+        sudo ln -sf /usr/bin/mlir-opt-${{ env.LLVM_VERSION }} /usr/bin/mlir-opt
+        sudo ln -sf /usr/bin/mlir-translate-${{ env.LLVM_VERSION }} /usr/bin/mlir-translate
+
+    - name: Configure CMake
+      run: |
+        mkdir build
+        cd build
+        cmake -G Ninja .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
+          -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
+
+    - name: Build rc-bench
+      working-directory: ${{ github.workspace }}/build
+      run: ninja
+
+    - name: Run Dense Benchmark (Phase 1)
+      run: |
+        python3 scripts/build_and_run.py \
+          --task dense \
+          --build-dir build \
+          --out-dir results_phase1 \
+          --mlir-translate mlir-translate \
+          --clang clang++ \
+          --mlir-opt mlir-opt
+
+    - name: Generate ESN Assets
+      run: |
+        mkdir -p results_phase2
+        python3 scripts/gen_esn_assets.py --out results_phase2/esn_mg_assets.npz
+
+    - name: Run ESN MG Benchmark (Phase 2)
+      run: |
+        python3 scripts/build_and_run.py \
+          --task esn_mg \
+          --build-dir build \
+          --out-dir results_phase2 \
+          --assets results_phase2/esn_mg_assets.npz \
+          --mlir-translate mlir-translate \
+          --clang clang++ \
+          --mlir-opt mlir-opt
+
+    - name: Upload Benchmark Results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: benchmark-results
+        path: |
+          results_phase1/*.csv
+          results_phase2/*.csv
+        retention-days: 14
