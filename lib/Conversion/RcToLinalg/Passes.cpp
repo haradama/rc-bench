@@ -19,7 +19,6 @@ using namespace mlir;
 
 namespace {
 struct ConvertRcToLinalgPass
-    // この環境では Base は rc::impl に生成されている
     : public rc::impl::ConvertRcToLinalgBase<ConvertRcToLinalgPass> {
   void runOnOperation() override {
     auto f = getOperation();
@@ -28,7 +27,7 @@ struct ConvertRcToLinalgPass
     rc::runConvertRcToLinalg(f);
   }
 };
-} // namespace
+}
 
 std::unique_ptr<Pass> rc::createConvertRcToLinalgPass() {
   return std::make_unique<ConvertRcToLinalgPass>();
